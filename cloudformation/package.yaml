@@ -1,0 +1,210 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS auto tagging for service EC2, S3, DynamoDB, RDS, Lambda, EFS, EBS,
+  ELB, OpenSearch, SNS, SQS, KMS
+Parameters:
+  AutomationTags:
+    Type: String
+    Default: '{"start/stop": "enable"}'
+    Description: 'Sample: {"TagName1": "TagValue1","TagName2": "TagValue2"}'
+  LambdaAutoTaggingFunctionName:
+    Type: String
+    Description: Name of the lambda-Ayto-Tagging-Function-Name
+    Default: resource-tagging-automation-function
+  EventBridgeRuleName:
+    Type: String
+    Description: Name of the EventBridge Rules
+    Default: resource-tagging-automation-rules
+  IAMAutoTaggingRoleName:
+    Type: String
+    Description: IAM role name for lambda
+    Default: resource-tagging-automation-role
+  IAMAutoTaggingPolicyName:
+    Type: String
+    Description: IAM customed managed policy
+    Default: resource-tagging-automation-policy
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+      - PolicyName:
+          Ref: IAMAutoTaggingPolicyName
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - dynamodb:TagResource
+            - dynamodb:DescribeTable
+            - lambda:TagResource
+            - lambda:ListTags
+            - s3:GetBucketTagging
+            - s3:PutBucketTagging
+            - ec2:CreateTags
+            - ec2:DescribeNatGateways
+            - ec2:DescribeInternetGateways
+            - ec2:DescribeVolumes
+            - rds:AddTagsToResource
+            - rds:DescribeDBInstances
+            - sns:TagResource
+            - sqs:ListQueueTags
+            - sqs:TagQueue
+            - es:AddTags
+            - kms:ListResourceTags
+            - kms:TagResource
+            - elasticfilesystem:TagResource
+            - elasticfilesystem:CreateTags
+            - elasticfilesystem:DescribeTags
+            - elasticloadbalancing:AddTags
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            - tag:getResources
+            - tag:getTagKeys
+            - tag:getTagValues
+            - tag:TagResources
+            - tag:UntagResources
+            - cloudformation:DescribeStacks
+            - cloudformation:ListStackResources
+            - resource-groups:*
+            Resource: '*'
+  LambdaAutoTagging:
+    Type: AWS::Lambda::Function
+    Properties:
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      Code:
+        ZipFile: "import boto3\nimport os\nimport json\n\ndef aws_ec2(event):\n  \
+          \  arnList = []\n    _account = event['account']\n    _region = event['region']\n\
+          \    ec2ArnTemplate = 'arn:aws:ec2:@region@:@account@:instance/@instanceId@'\n\
+          \    volumeArnTemplate = 'arn:aws:ec2:@region@:@account@:volume/@volumeId@'\n\
+          \    if event['detail']['eventName'] == 'RunInstances':\n        print(\"\
+          tagging for new EC2...\")\n        _instanceId = event['detail']['responseElements']['instancesSet']['items'][0]['instanceId']\n\
+          \        arnList.append(ec2ArnTemplate.replace('@region@', _region).replace('@account@',\
+          \ _account).replace('@instanceId@', _instanceId))\n\n        ec2_resource\
+          \ = boto3.resource('ec2')\n        _instance = ec2_resource.Instance(_instanceId)\n\
+          \        for volume in _instance.volumes.all():\n            arnList.append(volumeArnTemplate.replace('@region@',\
+          \ _region).replace('@account@', _account).replace('@volumeId@', volume.id))\n\
+          \n    elif event['detail']['eventName'] == 'CreateVolume':\n        print(\"\
+          tagging for new EBS...\")\n        _volumeId = event['detail']['responseElements']['volumeId']\n\
+          \        arnList.append(volumeArnTemplate.replace('@region@', _region).replace('@account@',\
+          \ _account).replace('@volumeId@', _volumeId))\n        \n    elif event['detail']['eventName']\
+          \ == 'CreateInternetGateway':\n        print(\"tagging for new IGW...\"\
+          )\n        \n    elif event['detail']['eventName'] == 'CreateNatGateway':\n\
+          \        print(\"tagging for new Nat Gateway...\")\n        \n    elif event['detail']['eventName']\
+          \ == 'AllocateAddress':\n        print(\"tagging for new EIP...\")\n   \
+          \     arnList.append(event['detail']['responseElements']['allocationId'])\n\
+          \        \n    elif event['detail']['eventName'] == 'CreateVpcEndpoint':\n\
+          \        print(\"tagging for new VPC Endpoint...\")\n        \n    elif\
+          \ event['detail']['eventName'] == 'CreateTransitGateway':\n        print(\"\
+          tagging for new Transit Gateway...\")\n\n    return arnList\n    \ndef aws_elasticloadbalancing(event):\n\
+          \    arnList = []\n    if event['detail']['eventName'] == 'CreateLoadBalancer':\n\
+          \        print(\"tagging for new LoadBalancer...\")\n        lbs = event['detail']['responseElements']\n\
+          \        for lb in lbs['loadBalancers']:\n            arnList.append(lb['loadBalancerArn'])\n\
+          \        return arnList\n\ndef aws_rds(event):\n    arnList = []\n    if\
+          \ event['detail']['eventName'] == 'CreateDBInstance':\n        print(\"\
+          tagging for new RDS...\")\n        #db_instance_id = event['detail']['requestParameters']['dBInstanceIdentifier']\n\
+          \        #waiter = boto3.client('rds').get_waiter('db_instance_available')\n\
+          \        #waiter.wait(\n        #    DBInstanceIdentifier = db_instance_id\n\
+          \        #)\n        arnList.append(event['detail']['responseElements']['dBInstanceArn'])\n\
+          \        return arnList\n\ndef aws_s3(event):\n    arnList = []\n    if\
+          \ event['detail']['eventName'] == 'CreateBucket':\n        print(\"tagging\
+          \ for new S3...\")\n        _bkcuetName = event['detail']['requestParameters']['bucketName']\n\
+          \        arnList.append('arn:aws:s3:::' + _bkcuetName)\n        return arnList\n\
+          \        \ndef aws_lambda(event):\n    arnList = []\n    _exist1 = event['detail']['responseElements']\n\
+          \    _exist2 = event['detail']['eventName'] == 'CreateFunction20150331'\n\
+          \    if  _exist1!= None and _exist2:\n        function_name = event['detail']['responseElements']['functionName']\n\
+          \        print('Functin name is :', function_name)\n        arnList.append(event['detail']['responseElements']['functionArn'])\n\
+          \        return arnList\n\ndef aws_dynamodb(event):\n    arnList = []\n\
+          \    if event['detail']['eventName'] == 'CreateTable':\n        table_name\
+          \ = event['detail']['responseElements']['tableDescription']['tableName']\n\
+          \        waiter = boto3.client('dynamodb').get_waiter('table_exists')\n\
+          \        waiter.wait(\n            TableName=table_name,\n            WaiterConfig={\n\
+          \                'Delay': 123,\n                'MaxAttempts': 123\n   \
+          \         }\n        )\n        arnList.append(event['detail']['responseElements']['tableDescription']['tableArn'])\n\
+          \        return arnList\n        \ndef aws_kms(event):\n    arnList = []\n\
+          \    if event['detail']['eventName'] == 'CreateKey':\n        arnList.append(event['detail']['responseElements']['keyMetadata']['arn'])\n\
+          \        return arnList\n        \ndef aws_sns(event):\n    arnList = []\n\
+          \    _account = event['account']\n    _region = event['region']\n    snsArnTemplate\
+          \ = 'arn:aws:sns:@region@:@account@:@topicName@'\n    if event['detail']['eventName']\
+          \ == 'CreateTopic':\n        print(\"tagging for new SNS...\")\n       \
+          \ _topicName = event['detail']['requestParameters']['name']\n        arnList.append(snsArnTemplate.replace('@region@',\
+          \ _region).replace('@account@', _account).replace('@topicName@', _topicName))\n\
+          \        return arnList\n        \ndef aws_sqs(event):\n    arnList = []\n\
+          \    _account = event['account']\n    _region = event['region']\n    sqsArnTemplate\
+          \ = 'arn:aws:sqs:@region@:@account@:@queueName@'\n    if event['detail']['eventName']\
+          \ == 'CreateQueue':\n        print(\"tagging for new SQS...\")\n       \
+          \ _queueName = event['detail']['requestParameters']['queueName']\n     \
+          \   arnList.append(sqsArnTemplate.replace('@region@', _region).replace('@account@',\
+          \ _account).replace('@queueName@', _queueName))\n        return arnList\n\
+          \        \ndef aws_elasticfilesystem(event):\n    arnList = []\n    _account\
+          \ = event['account']\n    _region = event['region']\n    efsArnTemplate\
+          \ = 'arn:aws:elasticfilesystem:@region@:@account@:file-system/@fileSystemId@'\n\
+          \    if event['detail']['eventName'] == 'CreateMountTarget':\n        print(\"\
+          tagging for new efs...\")\n        _efsId = event['detail']['responseElements']['fileSystemId']\n\
+          \        arnList.append(efsArnTemplate.replace('@region@', _region).replace('@account@',\
+          \ _account).replace('@fileSystemId@', _efsId))\n        return arnList\n\
+          \        \ndef aws_es(event):\n    arnList = []\n    if event['detail']['eventName']\
+          \ == 'CreateDomain':\n        print(\"tagging for new open search...\")\n\
+          \        arnList.append(event['detail']['responseElements']['domainStatus']['aRN'])\n\
+          \        return arnList\n\ndef main(event, context):\n    print(\"input\
+          \ event is: \")\n    print(event)\n    print(\"new source is \" + event['source'])\n\
+          \    _method = event['source'].replace('.', \"_\")\n\n    resARNs = globals()[_method](event)\n\
+          \    print(\"resource arn is: \")\n    print(resARNs)\n\n    _res_tags =\
+          \  json.loads(os.environ['tags'])\n    boto3.client('resourcegroupstaggingapi').tag_resources(\n\
+          \        ResourceARNList=resARNs,\n        Tags=_res_tags\n    )\n\n   \
+          \ return {\n        'statusCode': 200,\n        'body': json.dumps('Finished\
+          \ map tagging with ' + event['source'])\n    }\n"
+      FunctionName:
+        Ref: LambdaAutoTaggingFunctionName
+      Handler: index.main
+      Runtime: python3.8
+      Timeout: 300
+      Environment:
+        Variables:
+          tags:
+            Ref: AutomationTags
+  EventBridgeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Rules to filtering events
+      Name:
+        Ref: EventBridgeRuleName
+      EventPattern: '{ "detail": { "eventSource": ["ec2.amazonaws.com", "elasticloadbalancing.amazonaws.com",
+        "s3.amazonaws.com", "rds.amazonaws.com", "lambda.amazonaws.com", "dynamodb.amazonaws.com",
+        "elasticfilesystem.amazonaws.com", "es.amazonaws.com", "sqs.amazonaws.com",
+        "sns.amazonaws.com", "kms.amazonaws.com"], "eventName": ["RunInstances", "CreateFunction20150331",
+        "CreateBucket", "CreateDBInstance", "CreateTable", "CreateVolume", "CreateLoadBalancer",
+        "CreateMountTarget", "CreateDomain", "CreateQueue", "CreateTopic", "CreateKey"]
+        }, "source": ["aws.ec2", "aws.elasticloadbalancing", "aws.rds", "aws.lambda",
+        "aws.s3", "aws.dynamodb", "aws.elasticfilesystem", "aws.es", "aws.sqs", "aws.sns",
+        "aws.kms"] }'
+      Targets:
+      - Arn:
+          Fn::GetAtt:
+          - LambdaAutoTagging
+          - Arn
+        Id:
+          Ref: LambdaAutoTaggingFunctionName
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Ref: LambdaAutoTaggingFunctionName
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt:
+        - EventBridgeRule
+        - Arn
